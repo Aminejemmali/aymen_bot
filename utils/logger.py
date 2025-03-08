@@ -1,5 +1,10 @@
 # utils/logger.py
 import logging
+from config import users  # Import users from config
+
+# Configure the logger
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logger = logging.getLogger(__name__)  # Define the logger
 
 def log_user_state(user_id, message=""):
     """Log user state for debugging"""
@@ -12,4 +17,4 @@ def log_user_state(user_id, message=""):
         if message:
             state_info = f"{message}: {state_info}"
             
-        logger.info(state_info)
+        logger.info(state_info)  # Use the logger

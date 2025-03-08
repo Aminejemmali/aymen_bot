@@ -8,7 +8,9 @@ from utils.logger import log_user_state
 from handlers.conversation_states import *
 from handlers.start_handler import *
 from handlers.otp_handler import *
+from handlers.handle_name import *
 from handlers.phone_handler import *
+from handlers.handle_start_choice import handle_start_choice
 async def cancel(update: Update, context: CallbackContext) -> int:
     """Cancel the conversation"""
     user_id = update.effective_user.id
