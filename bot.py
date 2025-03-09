@@ -99,13 +99,27 @@ class InternetBot:
         user_id = update.effective_user.id
         if user_id in self.users and self.users[user_id]["approved"]:
             if self.users[user_id]["tokens"] > 0:
-                phone = update.message.text
+                phone = update.message.text.strip()  
+                # Check if phone is 8 digits
+                if not (phone.isdigit() and len(phone) == 8):
+                    await update.message.reply_text(
+                        "❌ رقم الهاتف غير صالح! يجب أن يكون 8 أرقام فقط (مثال: 12345678). حاول مرة أخرى. 📱",
+                        reply_markup=self.get_user_main_menu(user_id)
+                    )
+                    Config.log("info", f"Invalid phone number length submitted by user {user_id}: {phone}")
+                    return PHONE  # Keep user in PHONE state to retry
+                
                 self.users[user_id]["current_phone"] = phone
                 self.users[user_id]["state"] = WAITING_PHONE_APPROVAL
                 self.db.save_user(user_id, self.users[user_id])
                 await update.message.reply_text(self.messages.USER_MESSAGES["phone_received"])
-                keyboard = [[InlineKeyboardButton("موافقة ✅", callback_data=f"approve_phone_{user_id}"), InlineKeyboardButton("رفض ❌", callback_data=f"reject_phone_{user_id}")]]
-                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone), reply_markup=InlineKeyboardMarkup(keyboard))
+                keyboard = [[InlineKeyboardButton("موافقة ✅", callback_data=f"approve_phone_{user_id}"), 
+                           InlineKeyboardButton("رفض ❌", callback_data=f"reject_phone_{user_id}")]]
+                await context.bot.send_message(
+                    Config.ADMIN_ID, 
+                    self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone), 
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
                 Config.log("info", f"Phone submitted for user {user_id}")
                 return WAITING_PHONE_APPROVAL
             await update.message.reply_text(self.messages.USER_MESSAGES["no_tokens"], reply_markup=self.get_user_main_menu(user_id))
@@ -155,7 +169,7 @@ class InternetBot:
         # Admin buttons
         if user_id == Config.ADMIN_ID:
             if data == "check_users_with_tokens":
-                users_with_tokens = [f"👤 {user_data['name']} (ID: {uid}) - 🎟️ {user_data['tokens']}" for uid, user_data in self.users.items() if user_data["tokens"] > 0]
+                users_with_tokens = [f"👤 {user_data['name']} (ID: {uid}) - 🎟️ {user_data['tokens']}" for uid, user_data in self.users.items()]# user_data["tokens"] >= 0]
                 response = self.messages.ADMIN_MESSAGES["users_with_tokens"].format("\n".join(users_with_tokens)) if users_with_tokens else self.messages.ADMIN_MESSAGES["no_users_with_tokens"]
                 await query.edit_message_text(response, reply_markup=self.get_admin_main_menu())
                 Config.log("info", f"Admin {user_id} checked users with tokens")
