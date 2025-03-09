@@ -57,17 +57,16 @@ class Database:
                 cursor.execute("SELECT * FROM users")
                 for row in cursor.fetchall():
                     user_id, name, phones, current_phone, current_otp, approved, tokens, otp_verified_numbers, state = row
-                    # Handle legacy data: if json.loads fails, assume it's a Python str(list) and use eval
                     try:
                         phones_list = json.loads(phones) if phones else []
                     except json.JSONDecodeError:
                         Config.logger.warning(f"Invalid JSON in phones for user {user_id}: {phones}. Attempting eval.")
-                        phones_list = eval(phones) if phones else []  # Fallback to eval for old data
+                        phones_list = eval(phones) if phones else []
                     try:
                         otp_verified_list = json.loads(otp_verified_numbers) if otp_verified_numbers else []
                     except json.JSONDecodeError:
                         Config.logger.warning(f"Invalid JSON in otp_verified_numbers for user {user_id}: {otp_verified_numbers}. Attempting eval.")
-                        otp_verified_list = eval(otp_verified_numbers) if otp_verified_numbers else []  # Fallback to eval for old data
+                        otp_verified_list = eval(otp_verified_numbers) if otp_verified_numbers else []
 
                     users[user_id] = {
                         "name": name,
@@ -94,12 +93,12 @@ class Database:
             ''', (
                 user_id,
                 user_data["name"],
-                json.dumps(user_data["phones"]),  # Always save as valid JSON
+                json.dumps(user_data["phones"]),
                 user_data["current_phone"],
                 user_data["current_otp"],
                 int(user_data["approved"]),
                 user_data["tokens"],
-                json.dumps(user_data["otp_verified_numbers"]),  # Always save as valid JSON
+                json.dumps(user_data["otp_verified_numbers"]),
                 user_data["state"]
             ))
             conn.commit()
@@ -143,11 +142,11 @@ class Messages:
         "phone_submission": "📱 أرسل {} رقم الهاتف: {}\nالموافقة أو الرفض؟ ✅❌",
         "otp_submission": "🔑 أرسل {} رمز التحقق: {} لرقم {}\nالموافقة أو الرفض؟ ✅❌",
         "user_approved": "✅ تمت الموافقة على المستخدم {}",
-        "user_rejected": "❌ تم رفض المستخدم",
-        "phone_approved": "✅ تمت الموافقة على رقم الهاتف لـ {}",
-        "phone_rejected": "❌ تم رفض رقم الهاتف",
-        "otp_approved": "✅ تمت الموافقة على رمز التحقق لـ {} ورقم {}",
-        "otp_rejected": "❌ تم رفض رمز التحقق",
+        "user_rejected": "❌ تم رفض المستخدم {}",
+        "phone_approved": "✅ تمت الموافقة على رقم الهاتف {} لـ {}",
+        "phone_rejected": "❌ تم رفض رقم الهاتف {} لـ {}",
+        "otp_approved": "✅ تمت الموافقة على رمز التحقق {} لـ {} ورقم {}",
+        "otp_rejected": "❌ تم رفض رمز التحقق {} لـ {} ورقم {}",
         "admin_menu": "🏠 مرحبًا يا مشرف! اختر خيارًا:",
         "users_with_tokens": "👥 المستخدمون الذين لديهم رموز:\n{}",
         "no_users_with_tokens": "⚠️ لا يوجد مستخدمين لديهم رموز حاليًا.",
@@ -334,27 +333,32 @@ class InternetBot:
                 self.users[user_id]["state"] = PHONE
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["account_approved"], reply_markup=self.get_user_main_menu(user_id))
-                await query.edit_message_text(self.messages.ADMIN_MESSAGES["user_approved"].format(self.users[user_id]["name"]))
+                # Send a new message instead of editing, preserving the original
+                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["user_approved"].format(self.users[user_id]["name"]))
                 Config.logger.info(f"User approved: {user_id}")
         elif data.startswith("approve_phone_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
+                phone = self.users[user_id]["current_phone"]
                 self.users[user_id]["state"] = OTP
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["phone_approved"])
-                await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_approved"].format(self.users[user_id]["name"]))
+                # Send a new message with the phone number included
+                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["phone_approved"].format(phone, self.users[user_id]["name"]))
                 Config.logger.info(f"Phone approved for user {user_id}")
         elif data.startswith("approve_otp_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
                 phone = self.users[user_id]["current_phone"]
+                otp = self.users[user_id]["current_otp"]
                 self.users[user_id]["phones"].append(phone)
                 self.users[user_id]["otp_verified_numbers"].append(phone)
                 self.users[user_id]["tokens"] -= 1
                 self.users[user_id]["state"] = MAIN_MENU
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["otp_approved"].format(phone, self.users[user_id]["tokens"]), reply_markup=self.get_user_main_menu(user_id))
-                await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_approved"].format(self.users[user_id]["name"], phone))
+                # Send a new message with OTP and phone number included
+                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["otp_approved"].format(otp, self.users[user_id]["name"], phone))
                 Config.logger.info(f"OTP approved for user {user_id}")
         return ConversationHandler.END
 
@@ -367,27 +371,35 @@ class InternetBot:
         if data.startswith("reject_") and "_phone_" not in data and "_otp_" not in data:
             user_id = int(data.split("_")[1])
             if user_id in self.users:
+                name = self.users[user_id]["name"]
                 del self.users[user_id]
                 self.db.delete_user(user_id)
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["account_rejected"])
-                await query.edit_message_text(self.messages.ADMIN_MESSAGES["user_rejected"])
+                # Send a new message instead of editing
+                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["user_rejected"].format(name))
+                Config.logger.info(f"User rejected: {user_id}")
         elif data.startswith("reject_phone_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
+                phone = self.users[user_id]["current_phone"]
                 self.users[user_id]["current_phone"] = ""
                 self.users[user_id]["state"] = PHONE
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["phone_rejected"], reply_markup=self.get_user_main_menu(user_id))
-                await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_rejected"])
+                # Send a new message with the phone number included
+                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["phone_rejected"].format(phone, self.users[user_id]["name"]))
                 Config.logger.info(f"Phone rejected for user {user_id}")
         elif data.startswith("reject_otp_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
+                phone = self.users[user_id]["current_phone"]
+                otp = self.users[user_id]["current_otp"]
                 self.users[user_id]["current_otp"] = ""
                 self.users[user_id]["state"] = OTP
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["otp_rejected"], reply_markup=self.get_user_main_menu(user_id))
-                await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_rejected"])
+                # Send a new message with OTP and phone number included
+                await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["otp_rejected"].format(otp, self.users[user_id]["name"], phone))
                 Config.logger.info(f"OTP rejected for user {user_id}")
         return ConversationHandler.END
 
