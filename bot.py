@@ -1,165 +1,11 @@
-import os
-import logging
-import sqlite3
-import json
-from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, CallbackContext, ConversationHandler
-
+from config import Config
+from database import Database
+from messages.messages import Messages
 # Define conversation states
 START, NAME, WAITING_APPROVAL, PHONE, WAITING_PHONE_APPROVAL, OTP, WAITING_OTP_APPROVAL, MAIN_MENU, SET_TOKENS_USER, SET_TOKENS_AMOUNT = range(10)
 
-# --- Configuration ---
-class Config:
-    """Configuration class for environment variables and constants"""
-    load_dotenv()
-    BOT_TOKEN = os.getenv("BOT_TOKEN")
-    ADMIN_ID = int(os.getenv("ADMIN_ID"))
-    print(f'admin {ADMIN_ID}')
-    print(f'admin {BOT_TOKEN}')
-    DB_FILE = "users.db"
-
-    # Logging setup
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-    logger = logging.getLogger(__name__)
-
-# --- Database Handler ---
-class Database:
-    """SQLite database handler"""
-    def __init__(self, db_file):
-        self.db_file = db_file
-        self.init_db()
-
-    def init_db(self):
-        """Initialize the SQLite database"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id INTEGER PRIMARY KEY,
-                    name TEXT,
-                    phones TEXT DEFAULT '[]',
-                    current_phone TEXT DEFAULT '',
-                    current_otp TEXT DEFAULT '',
-                    approved INTEGER DEFAULT 0,
-                    tokens INTEGER DEFAULT 50,
-                    otp_verified_numbers TEXT DEFAULT '[]',
-                    state INTEGER DEFAULT 0
-                )
-            ''')
-            conn.commit()
-        Config.logger.info("Database initialized")
-
-    def load_users(self):
-        """Load users from the database into memory with compatibility for old data"""
-        users = {}
-        try:
-            with sqlite3.connect(self.db_file) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT * FROM users")
-                for row in cursor.fetchall():
-                    user_id, name, phones, current_phone, current_otp, approved, tokens, otp_verified_numbers, state = row
-                    try:
-                        phones_list = json.loads(phones) if phones else []
-                    except json.JSONDecodeError:
-                        Config.logger.warning(f"Invalid JSON in phones for user {user_id}: {phones}. Attempting eval.")
-                        phones_list = eval(phones) if phones else []
-                    try:
-                        otp_verified_list = json.loads(otp_verified_numbers) if otp_verified_numbers else []
-                    except json.JSONDecodeError:
-                        Config.logger.warning(f"Invalid JSON in otp_verified_numbers for user {user_id}: {otp_verified_numbers}. Attempting eval.")
-                        otp_verified_list = eval(otp_verified_numbers) if otp_verified_numbers else []
-
-                    users[user_id] = {
-                        "name": name,
-                        "phones": phones_list,
-                        "current_phone": current_phone,
-                        "current_otp": current_otp,
-                        "approved": bool(approved),
-                        "tokens": tokens,
-                        "otp_verified_numbers": otp_verified_list,
-                        "state": state
-                    }
-            Config.logger.info(f"Loaded {len(users)} users from database")
-        except sqlite3.OperationalError as e:
-            Config.logger.error(f"Database error: {e}")
-        return users
-
-    def save_user(self, user_id, user_data):
-        """Save or update a user's data in the database"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-            #if name =="":
-            #    name="N/A" 
-            cursor.execute('''
-                INSERT OR REPLACE INTO users (user_id, name, phones, current_phone, current_otp, approved, tokens, otp_verified_numbers, state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                user_id,
-                user_data["name"],
-                json.dumps(user_data["phones"]),
-                user_data["current_phone"],
-                user_data["current_otp"],
-                int(user_data["approved"]),
-                user_data["tokens"],
-                json.dumps(user_data["otp_verified_numbers"]),
-                user_data["state"]
-            ))
-            conn.commit()
-
-    def delete_user(self, user_id):
-        """Delete a user from the database"""
-        with sqlite3.connect(self.db_file) as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-            conn.commit()
-
-# --- Messages ---
-class Messages:
-    """Message definitions"""
-    USER_MESSAGES = {
-        "welcome": "🌟 مرحبًا بك! اختر خيارًا لبدء رحلتك مع الإنترنت السريع: 🚀",
-        "already_started": "👋 لقد بدأت بالفعل! ننتظر خطوتك القادمة.",
-        "name_prompt": "✨ من فضلك، أرسل لنا اسمك الكامل لنبدأ التسجيل!",
-        "name_received": "🎉 شكرًا يا صديقي! ننتظر موافقة المشرف الآن. ⏳",
-        "account_approved": "✅ تمت الموافقة على حسابك! أرسل رقم هاتفك للاشتراك في الإنترنت الآن! 📱",
-        "account_rejected": "😔 عذرًا، تم رفض طلبك. حاول مرة أخرى أو تواصل مع الدعم.",
-        "not_approved": "⏳ لم تتم الموافقة على حسابك بعد. انتظر قليلاً!",
-        "phone_received": "📞 تم استلام رقمك بنجاح! في انتظار موافقة المشرف. ⏳",
-        "phone_approved": "✅ تمت الموافقة على رقمك! أدخل رمز التحقق (OTP) الآن: 🔑",
-        "phone_rejected": "❌ تم رفض الرقم. جرب رقمًا آخر! 🔄",
-        "otp_received": "🔑 تم استلام رمز التحقق! ننتظر موافقة المشرف. ⏳",
-        "otp_approved": "🎉 تمت الموافقة! الإنترنت مفعّل لرقم {}! الرموز المتبقية: {} 🌐",
-        "otp_rejected": "❌ رمز التحقق مرفوض. حاول مرة أخرى! 🔄",
-        "send_phone": "📞 أرسل لنا رقم هاتفك للاشتراك في الإنترنت!",
-        "main_menu": "🏠 القائمة الرئيسية",
-        "tokens_remaining": "🎟️ الرموز المتبقية لديك: {}",
-        "profile_info": "👤 معلوماتك:\nالاسم: {}\nأرقامك المشتركة: {}\nالرموز المتبقية: {} 🎟️",
-        "input_not_recognized": "🤔 لم نفهم اختيارك! استخدم القائمة من فضلك.",
-        "add_another_number": "➕ أضف رقم هاتف جديد للاشتراك",
-        "no_tokens": "😔 نفدت الرموز! لا يمكنك إضافة أرقام جديدة الآن.",
-        "set_tokens_success": "✅ تم تحديث الرموز للمستخدم {} إلى {} بنجاح!",
-    }
-
-    ADMIN_MESSAGES = {
-        "new_user": "👤 طلب مستخدم جديد:\nالاسم: {}\nالموافقة أو الرفض؟ ✅❌",
-        "phone_submission": "📱 أرسل {} رقم الهاتف: {}\nالموافقة أو الرفض؟ ✅❌",
-        "otp_submission": "🔑 أرسل {} رمز التحقق: {} لرقم {}\nالموافقة أو الرفض؟ ✅❌",
-        "user_approved": "✅ تمت الموافقة على المستخدم {}",
-        "user_rejected": "❌ تم رفض المستخدم {}",
-        "phone_approved": "✅ تمت الموافقة على رقم الهاتف {} لـ {}",
-        "phone_rejected": "❌ تم رفض رقم الهاتف {} لـ {}",
-        "otp_approved": "✅ تمت الموافقة على رمز التحقق {} لـ {} ورقم {}",
-        "otp_rejected": "❌ تم رفض رمز التحقق {} لـ {} ورقم {}",
-        "admin_menu": "🏠 مرحبًا يا مشرف! اختر خيارًا:",
-        "users_with_tokens": "👥 المستخدمون الذين لديهم رموز:\n{}",
-        "no_users_with_tokens": "⚠️ لا يوجد مستخدمين لديهم رموز حاليًا.",
-        "set_tokens_prompt": "🎟️ أرسل معرف المستخدم (ID) لتعديل رموزه (مثال: 123456789):",
-        "processed_approved": "\nتمت الموافقة ✅",  # Friendly alternative text
-        "processed_rejected": "\nتم الرفض ❌",      # Friendly alternative text
-    }
-
-# --- Bot Logic ---
 class InternetBot:
     """Main bot logic"""
     def __init__(self):
@@ -179,7 +25,7 @@ class InternetBot:
             [InlineKeyboardButton("الرموز المتبقية 🎟️", callback_data="tokens")]
         ]
         if user_id in self.users and self.users[user_id].get("approved") and self.users[user_id]["tokens"] > 0:
-            keyboard.append([InlineKeyboardButton(self.messages.USER_MESSAGES["add_another_number"], callback_data="send_phone")])
+            keyboard.append([InlineKeyboardButton(self.messages.USER_MESSAGES["send_phone"], callback_data="send_phone")])
         return InlineKeyboardMarkup(keyboard)
 
     def get_admin_main_menu(self):
@@ -199,7 +45,7 @@ class InternetBot:
             self.users[user_id] = {"name": "", "phones": [], "current_phone": "", "current_otp": "", "approved": False, "tokens": 50, "otp_verified_numbers": [], "state": START}
             self.db.save_user(user_id, self.users[user_id])
             await update.message.reply_text(self.messages.USER_MESSAGES["welcome"], reply_markup=self.get_start_keyboard())
-            Config.logger.info(f"New user started: {user_id}")
+            Config.log("info", f"New user started: {user_id}")
             return START
         if not self.users[user_id]["approved"]:
             self.users[user_id]["state"] = WAITING_APPROVAL
@@ -216,7 +62,7 @@ class InternetBot:
         choice = update.message.text
         if user_id not in self.users:
             return await self.start(update, context)
-        Config.logger.info(f"User {user_id} chose: {choice}")
+        Config.log("info", f"User {user_id} chose: {choice}")
         if choice == "بدء التسجيل" and not self.users[user_id]["name"]:
             await update.message.reply_text(self.messages.USER_MESSAGES["name_prompt"])
             self.users[user_id]["state"] = NAME
@@ -245,7 +91,7 @@ class InternetBot:
             await update.message.reply_text(self.messages.USER_MESSAGES["name_received"])
             keyboard = [[InlineKeyboardButton("موافقة ✅", callback_data=f"approve_{user_id}"), InlineKeyboardButton("رفض ❌", callback_data=f"reject_{user_id}")]]
             await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["new_user"].format(self.users[user_id]["name"]), reply_markup=InlineKeyboardMarkup(keyboard))
-            Config.logger.info(f"Name submitted for user {user_id}")
+            Config.log("info", f"Name submitted for user {user_id}")
             return WAITING_APPROVAL
         return await self.handle_phone(update, context)
 
@@ -260,7 +106,7 @@ class InternetBot:
                 await update.message.reply_text(self.messages.USER_MESSAGES["phone_received"])
                 keyboard = [[InlineKeyboardButton("موافقة ✅", callback_data=f"approve_phone_{user_id}"), InlineKeyboardButton("رفض ❌", callback_data=f"reject_phone_{user_id}")]]
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone), reply_markup=InlineKeyboardMarkup(keyboard))
-                Config.logger.info(f"Phone submitted for user {user_id}")
+                Config.log("info", f"Phone submitted for user {user_id}")
                 return WAITING_PHONE_APPROVAL
             await update.message.reply_text(self.messages.USER_MESSAGES["no_tokens"], reply_markup=self.get_user_main_menu(user_id))
             return MAIN_MENU
@@ -279,7 +125,7 @@ class InternetBot:
             await update.message.reply_text(self.messages.USER_MESSAGES["otp_received"])
             keyboard = [[InlineKeyboardButton("موافقة ✅", callback_data=f"approve_otp_{user_id}"), InlineKeyboardButton("رفض ❌", callback_data=f"reject_otp_{user_id}")]]
             await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, self.users[user_id]["current_phone"]), reply_markup=InlineKeyboardMarkup(keyboard))
-            Config.logger.info(f"OTP submitted for user {user_id}")
+            Config.log("info", f"OTP submitted for user {user_id}")
             return WAITING_OTP_APPROVAL
         return await self.handle_phone(update, context)
 
@@ -288,7 +134,7 @@ class InternetBot:
         await query.answer()
         user_id = update.effective_user.id
         data = query.data
-        Config.logger.info(f"Button pressed by {user_id}: {data}")
+        Config.log("info", f"Button pressed by {user_id}: {data}")
 
         # User buttons
         if data == "profile" and user_id in self.users:
@@ -312,12 +158,12 @@ class InternetBot:
                 users_with_tokens = [f"👤 {user_data['name']} (ID: {uid}) - 🎟️ {user_data['tokens']}" for uid, user_data in self.users.items() if user_data["tokens"] > 0]
                 response = self.messages.ADMIN_MESSAGES["users_with_tokens"].format("\n".join(users_with_tokens)) if users_with_tokens else self.messages.ADMIN_MESSAGES["no_users_with_tokens"]
                 await query.edit_message_text(response, reply_markup=self.get_admin_main_menu())
-                Config.logger.info(f"Admin {user_id} checked users with tokens")
+                Config.log("info", f"Admin {user_id} checked users with tokens")
                 return MAIN_MENU
             elif data == "set_tokens":
                 await query.edit_message_text(self.messages.ADMIN_MESSAGES["set_tokens_prompt"], reply_markup=self.get_admin_main_menu())
                 context.user_data["state"] = SET_TOKENS_USER
-                Config.logger.info(f"Admin {user_id} initiated set tokens")
+                Config.log("info", f"Admin {user_id} initiated set tokens")
                 return SET_TOKENS_USER
             elif data.startswith("approve_") or data.startswith("reject_"):
                 if data.startswith("approve_"):
@@ -331,10 +177,9 @@ class InternetBot:
         data = query.data
         if update.effective_user.id != Config.ADMIN_ID:
             return ConversationHandler.END
-        Config.logger.info(f"Admin approval: {data}")
+        Config.log("info", f"Admin approval: {data}")
         
-        # Option 1: Remove buttons from the original message
-        remove_buttons = True  # Set to False for the friendly alternative
+        remove_buttons = True
         
         if data.startswith("approve_") and "_phone_" not in data and "_otp_" not in data:
             user_id = int(data.split("_")[1])
@@ -348,7 +193,7 @@ class InternetBot:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(self.users[user_id]["name"]).replace("الموافقة أو الرفض؟ ✅❌", ""))
                 else:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(self.users[user_id]["name"]).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_approved"]))
-                Config.logger.info(f"User approved: {user_id}")
+                Config.log("info", f"User approved: {user_id}")
         elif data.startswith("approve_phone_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
@@ -361,7 +206,7 @@ class InternetBot:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
                 else:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_approved"]))
-                Config.logger.info(f"Phone approved for user {user_id}")
+                Config.log("info", f"Phone approved for user {user_id}")
         elif data.startswith("approve_otp_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
@@ -378,7 +223,7 @@ class InternetBot:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
                 else:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_approved"]))
-                Config.logger.info(f"OTP approved for user {user_id}")
+                Config.log("info", f"OTP approved for user {user_id}")
         return ConversationHandler.END
 
     async def handle_admin_rejection(self, update: Update, context: CallbackContext) -> int:
@@ -386,10 +231,9 @@ class InternetBot:
         data = query.data
         if update.effective_user.id != Config.ADMIN_ID:
             return ConversationHandler.END
-        Config.logger.info(f"Admin rejection: {data}")
+        Config.log("info", f"Admin rejection: {data}")
         
-        # Option 1: Remove buttons from the original message
-        remove_buttons = True  # Set to False for the friendly alternative
+        remove_buttons = True
         
         if data.startswith("reject_") and "_phone_" not in data and "_otp_" not in data:
             user_id = int(data.split("_")[1])
@@ -403,7 +247,7 @@ class InternetBot:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(name).replace("الموافقة أو الرفض؟ ✅❌", ""))
                 else:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(name).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_rejected"]))
-                Config.logger.info(f"User rejected: {user_id}")
+                Config.log("info", f"User rejected: {user_id}")
         elif data.startswith("reject_phone_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
@@ -417,7 +261,7 @@ class InternetBot:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
                 else:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_rejected"]))
-                Config.logger.info(f"Phone rejected for user {user_id}")
+                Config.log("info", f"Phone rejected for user {user_id}")
         elif data.startswith("reject_otp_"):
             user_id = int(data.split("_")[2])
             if user_id in self.users:
@@ -432,7 +276,7 @@ class InternetBot:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
                 else:
                     await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_rejected"]))
-                Config.logger.info(f"OTP rejected for user {user_id}")
+                Config.log("info", f"OTP rejected for user {user_id}")
         return ConversationHandler.END
 
     async def handle_set_tokens_user(self, update: Update, context: CallbackContext) -> int:
@@ -440,7 +284,7 @@ class InternetBot:
         if user_id != Config.ADMIN_ID:
             return ConversationHandler.END
         text = update.message.text.strip()
-        Config.logger.info(f"Admin {user_id} entered user ID: {text}")
+        Config.log("info", f"Admin {user_id} entered user ID: {text}")
         try:
             target_user_id = int(text)
             if target_user_id in self.users:
@@ -463,7 +307,7 @@ class InternetBot:
             await update.message.reply_text("❌ حدث خطأ! حاول مرة أخرى من القائمة. 😅", reply_markup=self.get_admin_main_menu())
             return ConversationHandler.END
         text = update.message.text.strip()
-        Config.logger.info(f"Admin {user_id} entered token amount: {text} for user {target_user_id}")
+        Config.log("info", f"Admin {user_id} entered token amount: {text} for user {target_user_id}")
         try:
             tokens = int(text)
             if tokens < 0:
@@ -475,7 +319,7 @@ class InternetBot:
             await context.bot.send_message(target_user_id, f"🎉 مرحبًا! تم تحديث رموزك بواسطة المشرف. لديك الآن {tokens} رمزًا متبقيًا! 🚀")
             del context.user_data["target_user_id"]
             del context.user_data["state"]
-            Config.logger.info(f"Tokens set successfully for user {target_user_id}")
+            Config.log("info", f"Tokens set successfully for user {target_user_id}")
             return MAIN_MENU
         except ValueError:
             await update.message.reply_text("🤔 أرسل رقمًا صحيحًا للرموز (مثال: 10)! حاول مرة أخرى. 🔄", reply_markup=self.get_admin_main_menu())
@@ -505,7 +349,7 @@ class InternetBot:
         }
         if current_state in handlers:
             return await handlers[current_state](update, context)
-        Config.logger.info(f"Fallback triggered for user {user_id}")
+        Config.log("info", f"Fallback triggered for user {user_id}")
         await update.message.reply_text(self.messages.USER_MESSAGES["input_not_recognized"], 
                                         reply_markup=self.get_user_main_menu(user_id) if user_id in self.users and user_id != Config.ADMIN_ID else self.get_admin_main_menu())
         return MAIN_MENU
@@ -534,10 +378,5 @@ class InternetBot:
         )
         self.app.add_handler(conv_handler)
         self.app.add_handler(CallbackQueryHandler(self.button_handler))
-        Config.logger.info("Bot started")
+        Config.log("info", "Bot started")
         self.app.run_polling()
-
-# --- Main Execution ---
-if __name__ == "__main__":
-    bot = InternetBot()
-    bot.run()
