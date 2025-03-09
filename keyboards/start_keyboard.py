@@ -2,7 +2,6 @@
 from telegram import ReplyKeyboardMarkup
 
 def get_start_keyboard():
-    """Generate the initial command keyboard"""
     keyboard = [
         ["بدء التسجيل"],
         ["عرض الملف الشخصي", "الرموز المتبقية"]

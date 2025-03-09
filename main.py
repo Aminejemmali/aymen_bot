@@ -1,9 +1,9 @@
+# main.py
 import os
-import logging
-import sqlite3
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, CallbackContext, ConversationHandler
+import sqlite3  # Unused for now, but kept as per your original
 
 # Define conversation states
 START, NAME, WAITING_APPROVAL, PHONE, WAITING_PHONE_APPROVAL, OTP, WAITING_OTP_APPROVAL, MAIN_MENU = range(8)
@@ -11,553 +11,20 @@ START, NAME, WAITING_APPROVAL, PHONE, WAITING_PHONE_APPROVAL, OTP, WAITING_OTP_A
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+from config import ADMIN_ID
+ADMIN_ID = int(os.getenv("ADMIN_ID"))  # Set in config
 
 # Enable logging
+import logging
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Database setup
-DB_NAME = "bot_users.db"
-
-def init_db():
-    """Initialize the database and create tables if they don't exist."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            name TEXT,
-            phones TEXT,
-            approved INTEGER,
-            tokens INTEGER,
-            otp_verified_numbers TEXT,
-            state INTEGER
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-def get_user(user_id):
-    """Retrieve a user from the database."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-    conn.close()
-    if user:
-        return {
-            "user_id": user[0],
-            "name": user[1],
-            "phones": user[2].split(",") if user[2] else [],
-            "approved": bool(user[3]),
-            "tokens": user[4],
-            "otp_verified_numbers": user[5].split(",") if user[5] else [],
-            "state": user[6]
-        }
-    return None
-
-def save_user(user):
-    """Save or update a user in the database."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO users (user_id, name, phones, approved, tokens, otp_verified_numbers, state)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        user["user_id"],
-        user["name"],
-        ",".join(user["phones"]),
-        int(user["approved"]),
-        user["tokens"],
-        ",".join(user["otp_verified_numbers"]),
-        user["state"]
-    ))
-    conn.commit()
-    conn.close()
-
-def delete_user(user_id):
-    """Delete a user from the database."""
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-# Initialize the database
-init_db()
-
-# --- Arabic Messages ---
-MESSAGES = {
-    "welcome": "مرحبًا بك! اختر أحد الخيارات لبدء عملية الاشتراك في الإنترنت:",
-    "already_started": "لقد بدأت العملية بالفعل.",
-    "name_prompt": "يرجى إرسال اسمك الكامل لبدء التسجيل.",
-    "name_received": "شكرًا لك! في انتظار موافقة المشرف.",
-    "account_approved": "تم الموافقة على حسابك! يرجى إرسال رقم هاتفك للاشتراك في الإنترنت.",
-    "account_rejected": "عذرًا، تم رفض طلبك.",
-    "not_approved": "لم تتم الموافقة على حسابك بعد.",
-    "phone_received": "تم استلام رقم الهاتف. في انتظار موافقة المشرف.",
-    "phone_approved": "تمت الموافقة على رقم الهاتف. يرجى إدخال رمز التحقق (OTP) الخاص بك:",
-    "phone_rejected": "تم رفض رقم الهاتف. حاول مرة أخرى.",
-    "otp_received": "تم استلام رمز التحقق. في انتظار موافقة المشرف.",
-    "otp_approved": "تمت الموافقة على رمز التحقق! تم تفعيل الاشتراك في الإنترنت لرقم {}. الرموز المتبقية: {}",
-    "otp_rejected": "تم رفض رمز التحقق. حاول مرة أخرى.",
-    "no_phone": "لم ترسل رقم هاتف بعد.",
-    "send_phone": "الرجاء إرسال رقم هاتفك للاشتراك في الإنترنت",
-    "send_otp": "الرجاء إرسال رمز التحقق الخاص بك",
-    "main_menu": "القائمة الرئيسية",
-    "tokens_remaining": "الرموز المتبقية: {}",
-    "profile_info": "معلومات الملف الشخصي:\nالاسم: {}\nأرقام الهواتف المشتركة: {}\nالرموز المتبقية: {}",
-    "input_not_recognized": "لم يتم التعرف على الإدخال. يرجى استخدام القائمة.",
-    "add_another_number": "إضافة رقم هاتف جديد للاشتراك",
-    "no_tokens": "لقد نفدت الرموز المتاحة لديك. لا يمكنك إضافة المزيد من الأرقام.",
-}
-
-# Admin messages
-ADMIN_MESSAGES = {
-    "new_user": "طلب مستخدم جديد:\nالاسم: {}\nالموافقة أو الرفض؟",
-    "phone_submission": "أرسل المستخدم {} رقم الهاتف: {} للاشتراك في الإنترنت.\nالموافقة أو الرفض؟",
-    "otp_submission": "أرسل المستخدم {} رمز التحقق: {} لرقم {}.\nالموافقة أو الرفض؟",
-    "user_approved": "تمت الموافقة على المستخدم {}",
-    "user_rejected": "تم رفض طلب المستخدم",
-    "phone_approved": "تمت الموافقة على رقم الهاتف للمستخدم {}",
-    "phone_rejected": "تم رفض رقم الهاتف",
-    "otp_approved": "تمت الموافقة على رمز التحقق للمستخدم {} ورقم {}",
-    "otp_rejected": "تم رفض رمز التحقق",
-    "user_not_found": "المستخدم غير موجود",
-}
-
-# --- Helper Functions ---
-def get_start_keyboard():
-    """Generate the initial command keyboard"""
-    keyboard = [
-        ["بدء التسجيل"],
-        ["عرض الملف الشخصي", "الرموز المتبقية"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-
-def get_user_main_menu(user_id):
-    """Generate main menu keyboard for users"""
-    keyboard = [
-        [InlineKeyboardButton("عرض الملف الشخصي", callback_data="profile")],
-        [InlineKeyboardButton("الرموز المتبقية", callback_data="tokens")]
-    ]
-    
-    user = get_user(user_id)
-    if user and user.get("approved") and user["tokens"] > 0:
-        keyboard.append([InlineKeyboardButton(MESSAGES["add_another_number"], callback_data="send_phone")])
-    
-    return InlineKeyboardMarkup(keyboard)
-
-def log_user_state(user_id, message=""):
-    """Log user state for debugging"""
-    user = get_user(user_id)
-    if user:
-        state_info = f"User ID: {user_id}, Name: {user.get('name', 'None')}, "
-        state_info += f"Approved: {user.get('approved', False)}, "
-        state_info += f"Phones: {user.get('phones', [])}, "
-        state_info += f"OTP Verified Numbers: {user.get('otp_verified_numbers', [])}"
-        
-        if message:
-            state_info = f"{message}: {state_info}"
-            
-        logger.info(state_info)
-
-# --- COMMAND HANDLERS ---
-async def start(update: Update, context: CallbackContext) -> int:
-    """Start command for users"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        new_user = {
-            "user_id": user_id,
-            "name": "", 
-            "phones": [], 
-            "approved": False, 
-            "tokens": 50,
-            "otp_verified_numbers": [],
-            "state": START
-        }
-        save_user(new_user)
-        await update.message.reply_text(
-            MESSAGES["welcome"],
-            reply_markup=get_start_keyboard()
-        )
-        log_user_state(user_id, "New user started")
-        return START
-    else:
-        log_user_state(user_id, "Existing user started")
-        if not user["approved"]:
-            user["state"] = WAITING_APPROVAL
-            save_user(user)
-            await update.message.reply_text(
-                MESSAGES["already_started"] + "\n" + MESSAGES["name_received"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return WAITING_APPROVAL
-        else:
-            user["state"] = MAIN_MENU
-            save_user(user)
-            await update.message.reply_text(
-                MESSAGES["main_menu"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return MAIN_MENU
-
-async def handle_start_choice(update: Update, context: CallbackContext) -> int:
-    """Handle initial command choice"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        return await start(update, context)
-    
-    choice = update.message.text
-    log_user_state(user_id, f"Start choice: {choice}")
-    
-    if choice == "بدء التسجيل" and not user["name"]:
-        await update.message.reply_text(MESSAGES["name_prompt"])
-        user["state"] = NAME
-        save_user(user)
-        return NAME
-    elif choice == "عرض الملف الشخصي":
-        if user["approved"]:
-            phones_str = ", ".join(user["otp_verified_numbers"]) if user["otp_verified_numbers"] else "لا يوجد"
-            await update.message.reply_text(
-                MESSAGES["profile_info"].format(user["name"], phones_str, user["tokens"]),
-                reply_markup=get_user_main_menu(user_id)
-            )
-            user["state"] = MAIN_MENU
-            save_user(user)
-            return MAIN_MENU
-        else:
-            await update.message.reply_text(MESSAGES["not_approved"])
-            return WAITING_APPROVAL
-    elif choice == "الرموز المتبقية":
-        if user["approved"]:
-            await update.message.reply_text(
-                MESSAGES["tokens_remaining"].format(user["tokens"]),
-                reply_markup=get_user_main_menu(user_id)
-            )
-            user["state"] = MAIN_MENU
-            save_user(user)
-            return MAIN_MENU
-        else:
-            await update.message.reply_text(MESSAGES["not_approved"])
-            return WAITING_APPROVAL
-    else:
-        await update.message.reply_text(
-            MESSAGES["input_not_recognized"],
-            reply_markup=get_start_keyboard()
-        )
-        return START
-
-async def handle_name(update: Update, context: CallbackContext) -> int:
-    """Handle user name submission (only once)"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if user and not user["name"]:
-        user["name"] = update.message.text
-        user["state"] = WAITING_APPROVAL
-        save_user(user)
-        await update.message.reply_text(MESSAGES["name_received"])
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("موافقة", callback_data=f"approve_{user_id}"), 
-                InlineKeyboardButton("رفض", callback_data=f"reject_{user_id}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(
-            ADMIN_ID, 
-            ADMIN_MESSAGES["new_user"].format(user["name"]), 
-            reply_markup=reply_markup
-        )
-        log_user_state(user_id, "Name submitted")
-        return WAITING_APPROVAL
-    else:
-        return await handle_phone(update, context)  # If name already exists, treat as phone input
-
-async def button_handler(update: Update, context: CallbackContext) -> int:
-    """Handle button callbacks"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = update.effective_user.id
-    data = query.data
-    
-    log_user_state(user_id, f"Button pressed: {data}")
-    
-    if data == "profile":
-        user = get_user(user_id)
-        if user:
-            phones_str = ", ".join(user["otp_verified_numbers"]) if user["otp_verified_numbers"] else "لا يوجد"
-            await query.edit_message_text(
-                MESSAGES["profile_info"].format(user["name"], phones_str, user["tokens"]),
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return MAIN_MENU
-    
-    elif data == "tokens":
-        user = get_user(user_id)
-        if user:
-            await query.edit_message_text(
-                MESSAGES["tokens_remaining"].format(user["tokens"]),
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return MAIN_MENU
-    
-    elif data == "send_phone":
-        user = get_user(user_id)
-        if user and user["tokens"] > 0:
-            user["state"] = PHONE
-            save_user(user)
-            await query.edit_message_text(MESSAGES["send_phone"])
-            return PHONE
-        else:
-            await query.edit_message_text(
-                MESSAGES["no_tokens"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return MAIN_MENU
-    
-    elif data.startswith("approve_") or data.startswith("reject_"):
-        if user_id == ADMIN_ID:
-            if data.startswith("approve_"):
-                return await handle_admin_approval(update, context)
-            else:
-                return await handle_admin_rejection(update, context)
-        else:
-            user = get_user(user_id)
-            return user.get("state", MAIN_MENU)
-    
-    return MAIN_MENU
-
-async def handle_admin_approval(update: Update, context: CallbackContext) -> int:
-    """Handle all admin approval actions"""
-    query = update.callback_query
-    data = query.data
-    admin_id = update.effective_user.id
-    
-    if admin_id != ADMIN_ID:
-        return ConversationHandler.END
-    
-    logger.info(f"Admin approval: {data}")
-    
-    if data.startswith("approve_") and "_phone_" not in data and "_otp_" not in data:
-        user_id = int(data.split("_")[1])
-        user = get_user(user_id)
-        if user:
-            user["approved"] = True
-            user["state"] = PHONE
-            save_user(user)
-            await context.bot.send_message(
-                user_id, 
-                MESSAGES["account_approved"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            await query.edit_message_text(ADMIN_MESSAGES["user_approved"].format(user["name"]))
-            log_user_state(user_id, "User approved")
-    
-    elif data.startswith("approve_phone_"):
-        user_id = int(data.split("_")[2])
-        user = get_user(user_id)
-        if user:
-            user["state"] = OTP
-            save_user(user)
-            await context.bot.send_message(user_id, MESSAGES["phone_approved"])
-            await query.edit_message_text(ADMIN_MESSAGES["phone_approved"].format(user["name"]))
-            log_user_state(user_id, "Phone approved")
-    
-    elif data.startswith("approve_otp_"):
-        user_id = int(data.split("_")[2])
-        user = get_user(user_id)
-        if user:
-            phone = user["current_phone"]
-            user["phones"].append(phone)
-            user["otp_verified_numbers"].append(phone)
-            user["tokens"] -= 1
-            user["state"] = MAIN_MENU
-            save_user(user)
-            await context.bot.send_message(
-                user_id, 
-                MESSAGES["otp_approved"].format(phone, user["tokens"]),
-                reply_markup=get_user_main_menu(user_id)
-            )
-            await query.edit_message_text(ADMIN_MESSAGES["otp_approved"].format(user["name"], phone))
-            log_user_state(user_id, "OTP approved")
-    
-    return ConversationHandler.END
-
-async def handle_admin_rejection(update: Update, context: CallbackContext) -> int:
-    """Handle all admin rejection actions"""
-    query = update.callback_query
-    data = query.data
-    admin_id = update.effective_user.id
-    
-    if admin_id != ADMIN_ID:
-        return ConversationHandler.END
-    
-    logger.info(f"Admin rejection: {data}")
-    
-    if data.startswith("reject_") and "_phone_" not in data and "_otp_" not in data:
-        user_id = int(data.split("_")[1])
-        user = get_user(user_id)
-        if user:
-            delete_user(user_id)
-            await context.bot.send_message(user_id, MESSAGES["account_rejected"])
-            await query.edit_message_text(ADMIN_MESSAGES["user_rejected"])
-    
-    elif data.startswith("reject_phone_"):
-        user_id = int(data.split("_")[2])
-        user = get_user(user_id)
-        if user:
-            user["current_phone"] = ""
-            user["state"] = PHONE
-            save_user(user)
-            await context.bot.send_message(
-                user_id, 
-                MESSAGES["phone_rejected"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            await query.edit_message_text(ADMIN_MESSAGES["phone_rejected"])
-            log_user_state(user_id, "Phone rejected")
-    
-    elif data.startswith("reject_otp_"):
-        user_id = int(data.split("_")[2])
-        user = get_user(user_id)
-        if user:
-            user["current_otp"] = ""
-            user["state"] = OTP
-            save_user(user)
-            await context.bot.send_message(
-                user_id, 
-                MESSAGES["otp_rejected"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            await query.edit_message_text(ADMIN_MESSAGES["otp_rejected"])
-            log_user_state(user_id, "OTP rejected")
-    
-    return ConversationHandler.END
-
-async def handle_phone(update: Update, context: CallbackContext) -> int:
-    """Handle user phone number submission"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    log_user_state(user_id, "Phone submission attempt")
-    
-    if user and user["approved"]:
-        if user["tokens"] > 0:
-            phone = update.message.text
-            user["current_phone"] = phone
-            user["state"] = WAITING_PHONE_APPROVAL
-            save_user(user)
-            await update.message.reply_text(MESSAGES["phone_received"])
-            
-            keyboard = [
-                [
-                    InlineKeyboardButton("موافقة", callback_data=f"approve_phone_{user_id}"), 
-                    InlineKeyboardButton("رفض", callback_data=f"reject_phone_{user_id}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_message(
-                ADMIN_ID, 
-                ADMIN_MESSAGES["phone_submission"].format(user["name"], phone), 
-                reply_markup=reply_markup
-            )
-            log_user_state(user_id, "Phone submitted")
-            return WAITING_PHONE_APPROVAL
-        else:
-            await update.message.reply_text(
-                MESSAGES["no_tokens"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return MAIN_MENU
-    else:
-        if not user:
-            return await start(update, context)
-        else:
-            await update.message.reply_text(
-                MESSAGES["not_approved"],
-                reply_markup=get_user_main_menu(user_id)
-            )
-            return WAITING_APPROVAL
-
-async def handle_otp(update: Update, context: CallbackContext) -> int:
-    """Handle user OTP submission"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    log_user_state(user_id, "OTP submission attempt")
-    
-    if user and user["current_phone"]:
-        otp = update.message.text
-        user["current_otp"] = otp
-        user["state"] = WAITING_OTP_APPROVAL
-        save_user(user)
-        await update.message.reply_text(MESSAGES["otp_received"])
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("موافقة", callback_data=f"approve_otp_{user_id}"), 
-                InlineKeyboardButton("رفض", callback_data=f"reject_otp_{user_id}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(
-            ADMIN_ID, 
-            ADMIN_MESSAGES["otp_submission"].format(user["name"], otp, user["current_phone"]), 
-            reply_markup=reply_markup
-        )
-        log_user_state(user_id, "OTP submitted")
-        return WAITING_OTP_APPROVAL
-    else:
-        return await handle_phone(update, context)
-
-async def cancel(update: Update, context: CallbackContext) -> int:
-    """Cancel the conversation"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    if user:
-        user["state"] = MAIN_MENU
-        save_user(user)
-    
-    await update.message.reply_text(
-        MESSAGES["main_menu"],
-        reply_markup=get_user_main_menu(user_id)
-    )
-    return MAIN_MENU
-
-async def fallback(update: Update, context: CallbackContext) -> int:
-    """Fallback handler"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        return await start(update, context)
-    
-    current_state = user.get("state", MAIN_MENU)
-    
-    if current_state == START:
-        return await handle_start_choice(update, context)
-    elif current_state == NAME or current_state == WAITING_APPROVAL:
-        return await handle_name(update, context)
-    elif current_state == PHONE or current_state == WAITING_PHONE_APPROVAL:
-        return await handle_phone(update, context)
-    elif current_state == OTP or current_state == WAITING_OTP_APPROVAL:
-        return await handle_otp(update, context)
-    else:
-        log_user_state(user_id, "Fallback triggered")
-        await update.message.reply_text(
-            MESSAGES["input_not_recognized"],
-            reply_markup=get_user_main_menu(user_id)
-        )
-        return MAIN_MENU
+# Import handlers
+from handlers.start_handler import start, handle_start_choice
+from handlers.handle_name import handle_name  # Assume this exists
+from handlers.phone_handler import handle_phone
+from handlers.otp_handler import handle_otp
+from handlers.button_handler import button_handler, handle_admin_approval, handle_admin_rejection  # Assume these exist
 
 # --- MAIN FUNCTION ---
 def main():
@@ -567,33 +34,32 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, fallback)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_choice)
         ],
         states={
             START: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_choice)],
             NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
             WAITING_APPROVAL: [
                 CallbackQueryHandler(button_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)
             ],
             PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)],
             WAITING_PHONE_APPROVAL: [
                 CallbackQueryHandler(button_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_phone)
             ],
             OTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_otp)],
             WAITING_OTP_APPROVAL: [
                 CallbackQueryHandler(button_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_otp)
             ],
             MAIN_MENU: [
                 CallbackQueryHandler(button_handler),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, fallback)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, lambda update, context: MAIN_MENU)
             ],
         },
         fallbacks=[
-            CommandHandler("cancel", cancel),
-            MessageHandler(filters.ALL, fallback)
+            CommandHandler("cancel", lambda update, context: MAIN_MENU)
         ],
         allow_reentry=True,
     )
