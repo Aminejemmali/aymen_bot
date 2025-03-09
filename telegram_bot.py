@@ -151,6 +151,8 @@ class Messages:
         "users_with_tokens": "👥 المستخدمون الذين لديهم رموز:\n{}",
         "no_users_with_tokens": "⚠️ لا يوجد مستخدمين لديهم رموز حاليًا.",
         "set_tokens_prompt": "🎟️ أرسل معرف المستخدم (ID) لتعديل رموزه (مثال: 123456789):",
+        "processed_approved": "\nتمت الموافقة ✅",  # Friendly alternative text
+        "processed_rejected": "\nتم الرفض ❌",      # Friendly alternative text
     }
 
 # --- Bot Logic ---
@@ -326,6 +328,10 @@ class InternetBot:
         if update.effective_user.id != Config.ADMIN_ID:
             return ConversationHandler.END
         Config.logger.info(f"Admin approval: {data}")
+        
+        # Option 1: Remove buttons from the original message
+        remove_buttons = True  # Set to False for the friendly alternative
+        
         if data.startswith("approve_") and "_phone_" not in data and "_otp_" not in data:
             user_id = int(data.split("_")[1])
             if user_id in self.users:
@@ -333,8 +339,11 @@ class InternetBot:
                 self.users[user_id]["state"] = PHONE
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["account_approved"], reply_markup=self.get_user_main_menu(user_id))
-                # Send a new message instead of editing, preserving the original
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["user_approved"].format(self.users[user_id]["name"]))
+                if remove_buttons:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(self.users[user_id]["name"]).replace("الموافقة أو الرفض؟ ✅❌", ""))
+                else:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(self.users[user_id]["name"]).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_approved"]))
                 Config.logger.info(f"User approved: {user_id}")
         elif data.startswith("approve_phone_"):
             user_id = int(data.split("_")[2])
@@ -343,8 +352,11 @@ class InternetBot:
                 self.users[user_id]["state"] = OTP
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["phone_approved"])
-                # Send a new message with the phone number included
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["phone_approved"].format(phone, self.users[user_id]["name"]))
+                if remove_buttons:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
+                else:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_approved"]))
                 Config.logger.info(f"Phone approved for user {user_id}")
         elif data.startswith("approve_otp_"):
             user_id = int(data.split("_")[2])
@@ -357,8 +369,11 @@ class InternetBot:
                 self.users[user_id]["state"] = MAIN_MENU
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["otp_approved"].format(phone, self.users[user_id]["tokens"]), reply_markup=self.get_user_main_menu(user_id))
-                # Send a new message with OTP and phone number included
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["otp_approved"].format(otp, self.users[user_id]["name"], phone))
+                if remove_buttons:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
+                else:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_approved"]))
                 Config.logger.info(f"OTP approved for user {user_id}")
         return ConversationHandler.END
 
@@ -368,6 +383,10 @@ class InternetBot:
         if update.effective_user.id != Config.ADMIN_ID:
             return ConversationHandler.END
         Config.logger.info(f"Admin rejection: {data}")
+        
+        # Option 1: Remove buttons from the original message
+        remove_buttons = True  # Set to False for the friendly alternative
+        
         if data.startswith("reject_") and "_phone_" not in data and "_otp_" not in data:
             user_id = int(data.split("_")[1])
             if user_id in self.users:
@@ -375,8 +394,11 @@ class InternetBot:
                 del self.users[user_id]
                 self.db.delete_user(user_id)
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["account_rejected"])
-                # Send a new message instead of editing
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["user_rejected"].format(name))
+                if remove_buttons:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(name).replace("الموافقة أو الرفض؟ ✅❌", ""))
+                else:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["new_user"].format(name).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_rejected"]))
                 Config.logger.info(f"User rejected: {user_id}")
         elif data.startswith("reject_phone_"):
             user_id = int(data.split("_")[2])
@@ -386,8 +408,11 @@ class InternetBot:
                 self.users[user_id]["state"] = PHONE
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["phone_rejected"], reply_markup=self.get_user_main_menu(user_id))
-                # Send a new message with the phone number included
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["phone_rejected"].format(phone, self.users[user_id]["name"]))
+                if remove_buttons:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
+                else:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["phone_submission"].format(self.users[user_id]["name"], phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_rejected"]))
                 Config.logger.info(f"Phone rejected for user {user_id}")
         elif data.startswith("reject_otp_"):
             user_id = int(data.split("_")[2])
@@ -398,8 +423,11 @@ class InternetBot:
                 self.users[user_id]["state"] = OTP
                 self.db.save_user(user_id, self.users[user_id])
                 await context.bot.send_message(user_id, self.messages.USER_MESSAGES["otp_rejected"], reply_markup=self.get_user_main_menu(user_id))
-                # Send a new message with OTP and phone number included
                 await context.bot.send_message(Config.ADMIN_ID, self.messages.ADMIN_MESSAGES["otp_rejected"].format(otp, self.users[user_id]["name"], phone))
+                if remove_buttons:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", ""))
+                else:
+                    await query.edit_message_text(self.messages.ADMIN_MESSAGES["otp_submission"].format(self.users[user_id]["name"], otp, phone).replace("الموافقة أو الرفض؟ ✅❌", self.messages.ADMIN_MESSAGES["processed_rejected"]))
                 Config.logger.info(f"OTP rejected for user {user_id}")
         return ConversationHandler.END
 
